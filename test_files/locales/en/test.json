@@ -1,0 +1,8 @@
+{
+    "hello": "Hello World",
+    "hello_f": "Hello %s",
+    "hello_f_multi": "Hello %s %d %.2f",
+    "hello_key": "Hello {{ .Name }}",
+    "hello_struct": "Hello {{ .Data.Name }}",
+    "B": "b"
+}

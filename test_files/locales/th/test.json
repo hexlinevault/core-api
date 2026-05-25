@@ -1,0 +1,8 @@
+{
+    "hello": "สวัสดี World",
+    "hello_f": "สวัสดี %s",
+    "hello_f_multi": "สวัสดี %s %d %.2f",
+    "hello_key": "สวัสดี {{ .Name }}",
+    "hello_struct": "สวัสดี {{ .Data.Name }}",
+    "B": "b"
+}
