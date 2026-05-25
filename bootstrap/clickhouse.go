@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/hexlinevault/core-api.git/configs"
-	chorm "github.com/hexlinevault/core-api.git/helpers/clickhouse"
+	"github.com/hexlinevault/core-api/configs"
+	chorm "github.com/hexlinevault/core-api/helpers/clickhouse"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 )

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/hexlinevault/core-api.git/helpers/cipher"
+	"github.com/hexlinevault/core-api/helpers/cipher"
 
 	"gotest.tools/assert"
 )

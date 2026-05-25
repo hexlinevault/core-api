@@ -3,7 +3,7 @@ package bootstrap
 import (
 	"context"
 
-	"github.com/hexlinevault/core-api.git/configs"
+	"github.com/hexlinevault/core-api/configs"
 
 	manager "github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	s3 "github.com/aws/aws-sdk-go-v2/service/s3"

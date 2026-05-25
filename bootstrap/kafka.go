@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hexlinevault/core-api.git/configs"
+	"github.com/hexlinevault/core-api/configs"
 
 	"github.com/IBM/sarama"
 	"go.elastic.co/apm"

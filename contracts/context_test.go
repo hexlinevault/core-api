@@ -7,11 +7,11 @@ import (
 	"os"
 	"testing"
 
-	"github.com/hexlinevault/core-api.git/bootstrap"
-	"github.com/hexlinevault/core-api.git/contracts"
-	"github.com/hexlinevault/core-api.git/errors"
-	"github.com/hexlinevault/core-api.git/helpers/dump"
-	"github.com/hexlinevault/core-api.git/i18n"
+	"github.com/hexlinevault/core-api/bootstrap"
+	"github.com/hexlinevault/core-api/contracts"
+	"github.com/hexlinevault/core-api/errors"
+	"github.com/hexlinevault/core-api/helpers/dump"
+	"github.com/hexlinevault/core-api/i18n"
 
 	"github.com/gin-gonic/gin"
 	tassert "github.com/stretchr/testify/assert"

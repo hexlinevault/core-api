@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hexlinevault/core-api.git/configs"
+	"github.com/hexlinevault/core-api/configs"
 
 	"github.com/go-redsync/redsync/v4"
 	"github.com/go-redsync/redsync/v4/redis/goredis/v9"

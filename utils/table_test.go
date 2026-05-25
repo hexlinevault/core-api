@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/hexlinevault/core-api.git/utils"
+	"github.com/hexlinevault/core-api/utils"
 )
 
 func TestPrintTable(t *testing.T) {

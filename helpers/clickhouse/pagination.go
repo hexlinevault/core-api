@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/hexlinevault/core-api.git/helpers"
+	"github.com/hexlinevault/core-api/helpers"
 )
 
 // PagingOrderByCH defines sort column and direction for ClickHouse paging.

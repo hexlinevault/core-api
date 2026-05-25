@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hexlinevault/core-api.git/utils"
+	"github.com/hexlinevault/core-api/utils"
 )
 
 func TestISOWeekDay(t *testing.T) {

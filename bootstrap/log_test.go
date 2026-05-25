@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hexlinevault/core-api.git/bootstrap"
+	"github.com/hexlinevault/core-api/bootstrap"
 )
 
 func TestPrintLog(t *testing.T) {

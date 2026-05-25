@@ -1,7 +1,7 @@
 package contracts
 
 import (
-	"github.com/hexlinevault/core-api.git/bootstrap"
+	"github.com/hexlinevault/core-api/bootstrap"
 )
 
 type Contract struct {

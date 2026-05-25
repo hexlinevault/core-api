@@ -10,7 +10,7 @@ import (
 	"bytes"
 	"html/template"
 
-	"github.com/hexlinevault/core-api.git/bootstrap"
+	"github.com/hexlinevault/core-api/bootstrap"
 
 	"github.com/IBM/sarama"
 	"github.com/go-telegram/bot"

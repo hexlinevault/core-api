@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	systementities "github.com/hexlinevault/core-api.git/entities/systems"
-	coreErrors "github.com/hexlinevault/core-api.git/errors"
+	systementities "github.com/hexlinevault/core-api/entities/systems"
+	coreErrors "github.com/hexlinevault/core-api/errors"
 
 	"github.com/golang-jwt/jwt/v4"
 )

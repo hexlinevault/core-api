@@ -3,7 +3,7 @@ package bootstrap
 import (
 	"fmt"
 
-	"github.com/hexlinevault/core-api.git/configs"
+	"github.com/hexlinevault/core-api/configs"
 )
 
 var SYSTEM_NOTI_KAFKA_PUBLISHER = "system-notification-publisher"

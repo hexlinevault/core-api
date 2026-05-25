@@ -2,7 +2,7 @@ package apmmiddlewares
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/hexlinevault/core-api.git/bootstrap"
+	"github.com/hexlinevault/core-api/bootstrap"
 	"go.elastic.co/apm"
 )
 

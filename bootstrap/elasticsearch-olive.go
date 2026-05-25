@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	coreErrors "github.com/hexlinevault/core-api.git/errors"
+	coreErrors "github.com/hexlinevault/core-api/errors"
 
 	"github.com/olivere/elastic/v7"
 )

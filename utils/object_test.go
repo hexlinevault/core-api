@@ -3,8 +3,8 @@ package utils_test
 import (
 	"testing"
 
-	"github.com/hexlinevault/core-api.git/helpers/dump"
-	"github.com/hexlinevault/core-api.git/utils"
+	"github.com/hexlinevault/core-api/helpers/dump"
+	"github.com/hexlinevault/core-api/utils"
 )
 
 type TestNested struct {

@@ -9,7 +9,7 @@ import (
 	"os"
 	"strconv"
 
-	systementities "github.com/hexlinevault/core-api.git/entities/systems"
+	systementities "github.com/hexlinevault/core-api/entities/systems"
 
 	"gopkg.in/gomail.v2"
 )

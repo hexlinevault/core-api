@@ -275,7 +275,7 @@ _ = repo.From("orders").
 Use `PagingCH` with a `Query` to get a paginated result set (count + ordered slice + page meta). See [helpers/clickhouse/README.md](helpers/clickhouse/README.md) for full details.
 
 ```go
-import ClickHouseORM "github.com/hexlinevault/core-api.git/helpers/clickhouse"
+import ClickHouseORM "github.com/hexlinevault/core-api/helpers/clickhouse"
 
 var result []BetEvent
 order := ClickHouseORM.GeneratePagingOrderCH(sortBy, sortType)

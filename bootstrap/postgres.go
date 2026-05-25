@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/hexlinevault/core-api.git/configs"
+	"github.com/hexlinevault/core-api/configs"
 
 	"github.com/lib/pq"
 	postgres "go.elastic.co/apm/module/apmgormv2/driver/postgres"

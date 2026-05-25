@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/hexlinevault/core-api.git/configs"
+	"github.com/hexlinevault/core-api/configs"
 
 	"go.mongodb.org/mongo-driver/mongo"
 )

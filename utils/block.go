@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/hexlinevault/core-api.git/bootstrap"
+	"github.com/hexlinevault/core-api/bootstrap"
 )
 
 type Block struct {

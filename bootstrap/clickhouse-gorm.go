@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/hexlinevault/core-api.git/configs"
+	"github.com/hexlinevault/core-api/configs"
 
 	"gorm.io/driver/clickhouse"
 	"gorm.io/gorm"

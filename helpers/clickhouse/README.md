@@ -77,7 +77,7 @@ func GeneratePagingOrderCH(args ...string) *PagingOrderByCH
 
 ```go
 import (
-    ClickHouseORM "github.com/hexlinevault/core-api.git/helpers/clickhouse"
+    ClickHouseORM "github.com/hexlinevault/core-api/helpers/clickhouse"
     "github.com/doug-martin/goqu/v9"
 )
 

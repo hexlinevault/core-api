@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/hexlinevault/core-api.git/i18n"
+	"github.com/hexlinevault/core-api/i18n"
 
 	"github.com/gin-gonic/gin"
 	"gotest.tools/assert"

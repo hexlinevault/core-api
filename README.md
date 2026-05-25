@@ -1,4 +1,4 @@
-# github.com/hexlinevault/core-api.git
+# github.com/hexlinevault/core-api
 
 ## Kafka Integration
 
@@ -22,7 +22,7 @@ To publish a message to a topic:
 
 ```go
 import (
-    "github.com/hexlinevault/core-api.git/bootstrap"
+    "github.com/hexlinevault/core-api/bootstrap"
 )
 
 // Publish a simple string
@@ -62,7 +62,7 @@ import (
     "os/signal"
     "syscall"
     "github.com/IBM/sarama"
-    "github.com/hexlinevault/core-api.git/bootstrap"
+    "github.com/hexlinevault/core-api/bootstrap"
 )
 
 // 1. Define handler functions (must return error)
@@ -131,7 +131,7 @@ Handlers can return an error to trigger automatic retry. Configure retry behavio
 import (
     "time"
     "github.com/IBM/sarama"
-    "github.com/hexlinevault/core-api.git/bootstrap"
+    "github.com/hexlinevault/core-api/bootstrap"
 )
 
 // Handler that may fail
@@ -265,7 +265,7 @@ import (
     "context"
     "encoding/json"
 
-    "github.com/hexlinevault/core-api.git/bootstrap"
+    "github.com/hexlinevault/core-api/bootstrap"
 )
 
 const TopicSendEmail = "send-email"
