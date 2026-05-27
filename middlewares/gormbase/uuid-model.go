@@ -3,7 +3,7 @@ package gormbase
 import (
 	"time"
 
-	uuid "github.com/satori/go.uuid"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -14,6 +14,6 @@ type UUIDModel struct {
 }
 
 func (m *UUIDModel) BeforeCreate(tx *gorm.DB) error {
-	tx.Statement.SetColumn("ID", uuid.NewV4())
+	tx.Statement.SetColumn("ID", uuid.Must(uuid.NewV7()))
 	return nil
 }
