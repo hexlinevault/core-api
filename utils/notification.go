@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
@@ -59,13 +60,30 @@ func TriggerSystemNoti(ct context.Context, notiType NotiType, message string, er
 		Time:        time.Now(),
 		CodeLine:    codeLine,
 	}
-	if err := bootstrap.Kafka.Publish(ct, bootstrap.SYSTEM_NOTI_KAFKA_PUBLISHER, noti); err != nil {
-		bootstrap.Logger(ct).Error("trigger noti error", err)
+
+	switch bootstrap.SYSTEM_NOTI_ENGINE {
+	case bootstrap.SystemNotiEngineRedis:
+		if bootstrap.PubSub == nil {
+			bootstrap.Logger(ct).Error("trigger noti error", fmt.Errorf("pubsub service is not initialized"))
+			return
+		}
+		if _, err := bootstrap.PubSub.Publish(ct, bootstrap.SYSTEM_NOTI_KAFKA_PUBLISHER, noti); err != nil {
+			bootstrap.Logger(ct).Error("trigger noti error", err)
+		}
+	default: // bootstrap.SystemNotiEngineKafka
+		if bootstrap.Kafka == nil {
+			bootstrap.Logger(ct).Error("trigger noti error", fmt.Errorf("kafka service is not initialized"))
+			return
+		}
+		if err := bootstrap.Kafka.Publish(ct, bootstrap.SYSTEM_NOTI_KAFKA_PUBLISHER, noti); err != nil {
+			bootstrap.Logger(ct).Error("trigger noti error", err)
+		}
 	}
 }
 
-// SystemNotiSubscriber subscribe system notification need to InitSystemNoti first
-func SystemNotiSubscriber() func(msg *sarama.ConsumerMessage, noti *SystemNoti) error {
+// assertSystemNotiReady panics if the telegram connection/chat id required by the
+// subscriber has not been configured via InitSystemNoti.
+func assertSystemNotiReady() {
 	if bootstrap.SYSTEM_NOTI_TELEGRAM_BOT_CHAT_ID == "" {
 		panic("[system-noti] telegram chat id is require")
 	}
@@ -73,44 +91,67 @@ func SystemNotiSubscriber() func(msg *sarama.ConsumerMessage, noti *SystemNoti) 
 	if bootstrap.SYSTEM_NOTI_TELEGRAM_CONNECTION == "" || tg.Bot(bootstrap.SYSTEM_NOTI_TELEGRAM_CONNECTION) == nil {
 		panic("[system-noti] telegram connection is required")
 	}
-	return func(msg *sarama.ConsumerMessage, noti *SystemNoti) error {
-		{
-			errorBlock := ""
-			if noti.Error != "" {
-				errorBlock = `
+}
+
+// sendSystemNoti formats a system notification and delivers it to telegram.
+// Shared by both the Kafka and Redis subscribers.
+func sendSystemNoti(noti *SystemNoti) error {
+	errorBlock := ""
+	if noti.Error != "" {
+		errorBlock = `
 <pre><code>{{ .Error }}</code></pre>
 `
-			}
-			codeBlock := ""
-			if noti.Type != string(NotiTypeNotification) {
-				codeBlock = `
+	}
+	codeBlock := ""
+	if noti.Type != string(NotiTypeNotification) {
+		codeBlock = `
 <pre><code>{{ .CodeLine }}</code></pre>`
-			}
-			chatID := bootstrap.SYSTEM_NOTI_TELEGRAM_BOT_CHAT_ID // Replace with your chat ID
-			msgText := []byte(`<b>System {{ .Type }}</b>
+	}
+	chatID := bootstrap.SYSTEM_NOTI_TELEGRAM_BOT_CHAT_ID // Replace with your chat ID
+	msgText := []byte(`<b>System {{ .Type }}</b>
 <b>[{{ .Environment }}] {{ .Time }}</b>
 <b>{{ .Message }}</b>
 ` + errorBlock + `
 ` + codeBlock + `
 `)
-			t := template.Must(template.New("notiMsg").Parse(string(msgText)))
-			b := new(bytes.Buffer)
-			t.Execute(b, noti)
+	t := template.Must(template.New("notiMsg").Parse(string(msgText)))
+	b := new(bytes.Buffer)
+	t.Execute(b, noti)
 
-			// Create a new message
-			msg := &bot.SendMessageParams{
-				ChatID:    chatID,
-				Text:      b.String(),
-				ParseMode: models.ParseModeHTML,
-			}
+	// Create a new message
+	msg := &bot.SendMessageParams{
+		ChatID:    chatID,
+		Text:      b.String(),
+		ParseMode: models.ParseModeHTML,
+	}
 
-			// Send the message
-			ctx := context.Background()
-			_, err := new(bootstrap.TelegramBot).Bot(bootstrap.SYSTEM_NOTI_TELEGRAM_CONNECTION).SendMessage(ctx, msg)
-			if err != nil {
-				bootstrap.Logger(ctx).Error("[telegram] send message error ", err)
-			}
+	// Send the message
+	ctx := context.Background()
+	_, err := new(bootstrap.TelegramBot).Bot(bootstrap.SYSTEM_NOTI_TELEGRAM_CONNECTION).SendMessage(ctx, msg)
+	if err != nil {
+		bootstrap.Logger(ctx).Error("[telegram] send message error ", err)
+	}
+	return nil
+}
+
+// SystemNotiSubscriber subscribe system notification over Kafka. Need to InitSystemNoti first.
+func SystemNotiSubscriber() func(msg *sarama.ConsumerMessage, noti *SystemNoti) error {
+	assertSystemNotiReady()
+	return func(msg *sarama.ConsumerMessage, noti *SystemNoti) error {
+		return sendSystemNoti(noti)
+	}
+}
+
+// SystemNotiRedisSubscriber subscribe system notification over the Redis (PubSub) engine.
+// Need to InitSystemNoti first. Register with bootstrap.PubSub.Subscribe.
+func SystemNotiRedisSubscriber() bootstrap.HandlerFunc {
+	assertSystemNotiReady()
+	return func(ctx context.Context, payload []byte) error {
+		noti := new(SystemNoti)
+		if err := json.Unmarshal(payload, noti); err != nil {
+			bootstrap.Logger(ctx).Error("[system-noti] unmarshal payload error", err)
+			return nil
 		}
-		return nil
+		return sendSystemNoti(noti)
 	}
 }
