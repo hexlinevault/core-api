@@ -18,12 +18,27 @@ const defaultQueueName = "default"
 var PubSub *PubSubService
 
 var (
-	ctxType = reflect.TypeOf((*context.Context)(nil)).Elem()
 	errType = reflect.TypeOf((*error)(nil)).Elem()
+	msgType = reflect.TypeOf((*PubSubMessage)(nil))
 )
 
-// HandlerFunc is the callback for a topic. Payload is the raw JSON bytes from Publish.
+// PubSubMessage is the message delivered to a subscriber, analogous to
+// sarama.ConsumerMessage on the Kafka side. Context carries the per-message
+// context (with the APM transaction); Payload is the raw JSON bytes.
+type PubSubMessage struct {
+	Context context.Context
+	Topic   string
+	Payload []byte
+	ID      string // asynq task ID
+}
+
+// HandlerFunc is the raw callback for a topic. Payload is the raw JSON bytes
+// from Publish. Kept for backward compatibility; new code can use the Kafka-style
+// func(*PubSubMessage, *T) error handlers (see Subscribe).
 type HandlerFunc func(ctx context.Context, payload []byte) error
+
+// msgHandler is the internal, normalized handler shape stored per topic.
+type msgHandler func(msg *PubSubMessage) error
 
 type PubSubService struct {
 	client    *asynq.Client
@@ -31,7 +46,7 @@ type PubSubService struct {
 	queueName string
 	prefix    string
 	server    *asynq.Server
-	handlers  map[string]HandlerFunc
+	handlers  map[string]msgHandler
 	mu        sync.RWMutex
 	wg        sync.WaitGroup
 	closeOnce sync.Once
@@ -67,19 +82,19 @@ func NewPubSubService(rdb redis.UniversalClient, queueName string, prefix ...str
 		rdb:       rdb,
 		queueName: queueName,
 		prefix:    p,
-		handlers:  make(map[string]HandlerFunc),
+		handlers:  make(map[string]msgHandler),
 	}
 }
 
 // Subscribe registers a handler for a topic. Call before Start().
 //
-// handler may be either:
-//   - func(ctx context.Context, payload []byte) error  — raw JSON bytes, unmarshal yourself
-//   - func(ctx context.Context, data *T) error          — the JSON payload is auto-unmarshaled into *T
+// handler may be any of these shapes (mirrors the Kafka service):
+//   - func(msg *PubSubMessage, data *T) error  — JSON payload auto-unmarshaled into *T
+//   - func(msg *PubSubMessage, payload []byte) error  — raw bytes, message metadata available
+//   - func(ctx context.Context, payload []byte) error — raw bytes (legacy, ctx only)
 //
-// This mirrors the Kafka service: pass a typed handler and the payload is
-// decoded for you. The topic is exposed to the handler via APM tracing rather
-// than as a parameter (see processTask).
+// For the Kafka-style forms, msg.Topic / msg.Context / msg.Payload are available
+// inside the handler.
 func (s *PubSubService) Subscribe(topic string, handler interface{}) {
 	if topic == "" {
 		panic("pubsub: topic is required")
@@ -102,24 +117,25 @@ func (s *PubSubService) Subscribe(topic string, handler interface{}) {
 		Infof("Registered handler for topic %s", topic)
 }
 
-// wrapHandler normalizes a user handler into a HandlerFunc. Raw byte handlers
-// are returned as-is; a typed func(ctx, *T) error is wrapped so the JSON payload
-// is unmarshaled into a fresh *T before the call.
-func (s *PubSubService) wrapHandler(handler interface{}) HandlerFunc {
+// wrapHandler normalizes a user handler into the internal msgHandler shape.
+func (s *PubSubService) wrapHandler(handler interface{}) msgHandler {
 	switch h := handler.(type) {
 	case HandlerFunc:
-		return h
+		return func(m *PubSubMessage) error { return h(m.Context, m.Payload) }
 	case func(context.Context, []byte) error:
-		return h
+		return func(m *PubSubMessage) error { return h(m.Context, m.Payload) }
+	case func(*PubSubMessage, []byte) error:
+		return func(m *PubSubMessage) error { return h(m, m.Payload) }
 	}
 
+	// Reflection path: func(*PubSubMessage, *T) error
 	v := reflect.ValueOf(handler)
 	t := v.Type()
 	if t.Kind() != reflect.Func || t.NumIn() != 2 || t.NumOut() != 1 {
-		panic(fmt.Sprintf("pubsub subscribe: handler must be func(context.Context, *T) error, got %T", handler))
+		panic(fmt.Sprintf("pubsub subscribe: handler must be func(*PubSubMessage, *T) error, got %T", handler))
 	}
-	if t.In(0) != ctxType {
-		panic(fmt.Sprintf("pubsub subscribe: first arg must be context.Context, got %v", t.In(0)))
+	if t.In(0) != msgType {
+		panic(fmt.Sprintf("pubsub subscribe: first arg must be *PubSubMessage or context.Context, got %v", t.In(0)))
 	}
 	if !t.Out(0).Implements(errType) {
 		panic(fmt.Sprintf("pubsub subscribe: handler must return error, got %v", t.Out(0)))
@@ -129,14 +145,14 @@ func (s *PubSubService) wrapHandler(handler interface{}) HandlerFunc {
 		panic(fmt.Sprintf("pubsub subscribe: second arg must be a pointer (*T), got %v", arg1))
 	}
 
-	return func(ctx context.Context, payload []byte) error {
+	return func(m *PubSubMessage) error {
 		ptr := reflect.New(arg1.Elem()) // new(T) -> *T
-		if len(payload) > 0 {
-			if err := json.Unmarshal(payload, ptr.Interface()); err != nil {
+		if len(m.Payload) > 0 {
+			if err := json.Unmarshal(m.Payload, ptr.Interface()); err != nil {
 				return err
 			}
 		}
-		res := v.Call([]reflect.Value{reflect.ValueOf(ctx), ptr})
+		res := v.Call([]reflect.Value{reflect.ValueOf(m), ptr})
 		if res[0].IsNil() {
 			return nil
 		}
@@ -157,9 +173,11 @@ func (s *PubSubService) processTask(ctx context.Context, task *asynq.Task) error
 		return nil
 	}
 
+	taskID, _ := asynq.GetTaskID(ctx)
+
 	tracer := apm.DefaultTracer
 	if !tracer.Recording() {
-		return fn(ctx, task.Payload())
+		return fn(&PubSubMessage{Context: ctx, Topic: topic, Payload: task.Payload(), ID: taskID})
 	}
 
 	tx := tracer.StartTransaction(fmt.Sprintf("PubSub Consume %s", topic), "messaging")
@@ -177,7 +195,7 @@ func (s *PubSubService) processTask(ctx context.Context, task *asynq.Task) error
 		}
 	}()
 
-	err := fn(ctx, task.Payload())
+	err := fn(&PubSubMessage{Context: ctx, Topic: topic, Payload: task.Payload(), ID: taskID})
 	if err != nil {
 		tx.Result = "failure"
 		e := tracer.NewError(err)
