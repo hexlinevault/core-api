@@ -200,13 +200,14 @@ asynq Client.EnqueueContext → Redis (queue: default or the one specified)
        ▼
 asynq Server (worker) in a goroutine — Start() returns immediately
   → processTask dispatches by task.Type() (topic) to the Subscribed handler
-       │
+       │  builds a *PubSubMessage and wraps the call in an APM transaction
        ▼
-HandlerFunc(ctx, payload []byte)  — payload is JSON bytes; unmarshal it yourself in the handler
+handler(msg *PubSubMessage, data *T)  — core unmarshals the JSON payload into *T
 ```
 
 - **Immediate:** no option → enqueued on the default queue, runs as soon as a worker is free
 - **Delayed:** pass `asynq.ProcessIn(delay)` in the Publish opts
+- **Kafka-like:** the subscriber API mirrors the Kafka service — pass a typed handler and the payload is decoded for you; `msg` exposes the topic and per-message context
 
 ### Usage
 
@@ -217,7 +218,8 @@ Use a Redis connection that has already been registered (you must call `CreateRe
 bootstrap.CreatePubSubService("")        // use the redis connection named "default"
 bootstrap.CreatePubSubService("cache")   // use the connection named "cache"
 
-// Register handlers before Start (handler receives ctx and payload []byte)
+// Register handlers before Start. Handlers can be typed (core unmarshals for you):
+//   func(msg *bootstrap.PubSubMessage, data *SendEmail) error
 bootstrap.PubSub.Subscribe("send-email", sendEmailHandler)
 bootstrap.PubSub.Subscribe("charge-card", chargeCardHandler)
 
@@ -238,22 +240,42 @@ bootstrap.PubSub.Publish(ctx, "send-email", payload, asynq.ProcessIn(5*time.Seco
 | `CreatePubSubService(redisConnectionName string)` | In the app — take a registered Redis connection and set the global `bootstrap.PubSub` |
 | `NewPubSubService(rdb, queueName string)` | Build a service yourself (e.g. in tests where you want an isolated queue) — if `queueName == ""`, `"default"` is used |
 
-### Handler signature
+### Handler signatures
 
-A handler is a `bootstrap.HandlerFunc` = `func(ctx context.Context, payload []byte) error`. The payload is the JSON that Publish marshaled — you must unmarshal it yourself in the handler:
+`Subscribe(topic string, handler interface{})` accepts three handler shapes (mirroring the Kafka service). Pick whichever fits:
+
+| Shape | Use when |
+|-------|----------|
+| `func(msg *PubSubMessage, data *T) error` | **typed** — core JSON-unmarshals the payload into a fresh `*T` for you |
+| `func(msg *PubSubMessage, payload []byte) error` | raw bytes, but you still want `msg` metadata (topic, context, id) |
+| `func(ctx context.Context, payload []byte) error` | legacy raw form (`HandlerFunc`) — ctx only, unmarshal yourself |
+
+`PubSubMessage` carries the per-message data (analogous to `sarama.ConsumerMessage` on Kafka):
 
 ```go
-func sendEmailHandler(ctx context.Context, payload []byte) error {
-    var p struct {
-        To      string `json:"to"`
-        Subject string `json:"subject"`
-    }
-    if err := json.Unmarshal(payload, &p); err != nil {
-        return err
-    }
-    return mailer.Send(ctx, p)
+type PubSubMessage struct {
+    Context context.Context // per-message context, carries the APM transaction
+    Topic   string
+    Payload []byte           // raw JSON bytes
+    ID      string           // asynq task id
 }
 ```
+
+**Typed handler (recommended)** — no manual unmarshal:
+
+```go
+type SendEmail struct {
+    To      string `json:"to"`
+    Subject string `json:"subject"`
+}
+
+func sendEmailHandler(msg *bootstrap.PubSubMessage, p *SendEmail) error {
+    // p is already decoded; use msg.Context for downstream calls (APM-aware)
+    return mailer.Send(msg.Context, p)
+}
+```
+
+> Use `msg.Context` (not `context.Background()`) so DB/HTTP spans nest under the message's APM transaction.
 
 ### Recommended pattern — subscribers package
 
