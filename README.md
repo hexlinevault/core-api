@@ -283,28 +283,21 @@ func sendEmailHandler(msg *bootstrap.PubSubMessage, p *SendEmail) error {
 // subscribers/delayed.go
 package subscribers
 
-import (
-    "context"
-    "encoding/json"
-
-    "github.com/hexlinevault/core-api/bootstrap"
-)
+import "github.com/hexlinevault/core-api/bootstrap"
 
 const TopicSendEmail = "send-email"
+
+type SendEmail struct {
+    To      string `json:"to"`
+    Subject string `json:"subject"`
+}
 
 func RegisterDelayed() {
     bootstrap.PubSub.Subscribe(TopicSendEmail, sendEmailHandler)
 }
 
-func sendEmailHandler(ctx context.Context, payload []byte) error {
-    var p struct {
-        To      string `json:"to"`
-        Subject string `json:"subject"`
-    }
-    if err := json.Unmarshal(payload, &p); err != nil {
-        return err
-    }
-    bootstrap.Logger(ctx).Info("send-email: " + p.To)
+func sendEmailHandler(msg *bootstrap.PubSubMessage, p *SendEmail) error {
+    bootstrap.Logger(msg.Context).Info("send-email: " + p.To)
     return nil
 }
 ```
@@ -325,6 +318,12 @@ defer bootstrap.PubSub.Close()
 - The queue name comes from `CreatePubSubService` (uses `"default"`) or `NewPubSubService(rdb, queueName)`
 - Topic = asynq task type; payload = task payload (JSON bytes)
 - Publish adds `asynq.Queue(s.queueName)` automatically
+
+### Observability
+
+- **Logging:** `Subscribe` logs each registered topic, and `Start` logs the full topic list it is about to consume (`component=pubsub`). `processTask` logs a warning when a message arrives for a topic with no registered handler.
+- **APM tracing:** every message is processed inside an Elastic APM transaction named `PubSub Consume <topic>` (with `topic`/`queue` labels). Use `msg.Context` inside handlers so downstream DB/HTTP spans nest under it.
+- **Distributed tracing:** when a trace is active at publish time, `Publish` propagates a W3C `traceparent` alongside the payload (asynq has no message headers, so it travels in a small `{_tp, _data}` envelope). The consumer continues that trace, so a request → publish → async handler shows up as one connected trace — the same behavior as the Kafka service. The `traceparent` wire format is cross-vendor (Elastic APM, OpenTelemetry, Datadog…), so only the inject/parse helpers change if the tracer is swapped.
 
 ### Cluster safety
 

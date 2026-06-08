@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
 	"go.elastic.co/apm"
+	"go.elastic.co/apm/module/apmhttp"
 )
 
 const defaultQueueName = "default"
@@ -39,6 +41,58 @@ type HandlerFunc func(ctx context.Context, payload []byte) error
 
 // msgHandler is the internal, normalized handler shape stored per topic.
 type msgHandler func(msg *PubSubMessage) error
+
+// traceEnvelope wraps a payload with a W3C traceparent so the consumer can
+// continue the producer's distributed trace. asynq has no message headers (unlike
+// Kafka), so the trace context travels inside the payload. It is only used when a
+// trace is active at publish time; untraced messages are published as the raw
+// payload and the consumer transparently treats the whole payload as data.
+type traceEnvelope struct {
+	Traceparent string          `json:"_tp"`
+	Data        json.RawMessage `json:"_data"`
+}
+
+// injectTraceparent renders the active trace in ctx as a W3C traceparent string.
+// Returns "" when there is no recordable trace. W3C is the cross-vendor standard
+// (Elastic APM, OpenTelemetry, Datadog, …), so swapping tracers only touches the
+// inject/parse helpers — the wire format stays the same.
+func injectTraceparent(ctx context.Context) string {
+	tx := apm.TransactionFromContext(ctx)
+	if tx == nil {
+		return ""
+	}
+	tc := tx.TraceContext()
+	if tc.Trace.Validate() != nil {
+		return ""
+	}
+	return fmt.Sprintf("00-%s-%s-%02x",
+		hex.EncodeToString(tc.Trace[:]),
+		hex.EncodeToString(tc.Span[:]),
+		tc.Options)
+}
+
+// parseTraceparent parses a W3C traceparent string into an apm.TraceContext.
+func parseTraceparent(tp string) (apm.TraceContext, bool) {
+	if tp == "" {
+		return apm.TraceContext{}, false
+	}
+	tc, err := apmhttp.ParseTraceparentHeader(tp)
+	if err != nil {
+		return apm.TraceContext{}, false
+	}
+	return tc, true
+}
+
+// unwrapEnvelope splits a stored task payload into the original data bytes and the
+// traceparent, if present. Payloads that are not envelopes (untraced / legacy) are
+// returned verbatim as data.
+func unwrapEnvelope(payload []byte) (data []byte, traceparent string) {
+	var env traceEnvelope
+	if err := json.Unmarshal(payload, &env); err == nil && len(env.Data) > 0 {
+		return env.Data, env.Traceparent
+	}
+	return payload, ""
+}
 
 type PubSubService struct {
 	client    *asynq.Client
@@ -174,13 +228,20 @@ func (s *PubSubService) processTask(ctx context.Context, task *asynq.Task) error
 	}
 
 	taskID, _ := asynq.GetTaskID(ctx)
+	payload, traceparent := unwrapEnvelope(task.Payload())
 
 	tracer := apm.DefaultTracer
 	if !tracer.Recording() {
-		return fn(&PubSubMessage{Context: ctx, Topic: topic, Payload: task.Payload(), ID: taskID})
+		return fn(&PubSubMessage{Context: ctx, Topic: topic, Payload: payload, ID: taskID})
 	}
 
-	tx := tracer.StartTransaction(fmt.Sprintf("PubSub Consume %s", topic), "messaging")
+	// Continue the producer's trace when a traceparent was propagated, mirroring
+	// APMKafkaWrapper on the Kafka side.
+	var txOpts apm.TransactionOptions
+	if tc, ok := parseTraceparent(traceparent); ok {
+		txOpts.TraceContext = tc
+	}
+	tx := tracer.StartTransactionOptions(fmt.Sprintf("PubSub Consume %s", topic), "messaging", txOpts)
 	defer tx.End()
 	tx.Context.SetLabel("topic", topic)
 	tx.Context.SetLabel("queue", s.queueName)
@@ -195,7 +256,7 @@ func (s *PubSubService) processTask(ctx context.Context, task *asynq.Task) error
 		}
 	}()
 
-	err := fn(&PubSubMessage{Context: ctx, Topic: topic, Payload: task.Payload(), ID: taskID})
+	err := fn(&PubSubMessage{Context: ctx, Topic: topic, Payload: payload, ID: taskID})
 	if err != nil {
 		tx.Result = "failure"
 		e := tracer.NewError(err)
@@ -255,7 +316,18 @@ func (s *PubSubService) Publish(ctx context.Context, topic string, payload any, 
 	if err != nil {
 		return nil, err
 	}
-	task := asynq.NewTask(topic, payloadBytes)
+
+	// Propagate the active trace (if any) to the consumer via a W3C traceparent,
+	// mirroring the Kafka producer. Only wrap when a trace is active so untraced
+	// payloads stay as plain data.
+	taskPayload := payloadBytes
+	if tp := injectTraceparent(ctx); tp != "" {
+		if env, err := json.Marshal(traceEnvelope{Traceparent: tp, Data: payloadBytes}); err == nil {
+			taskPayload = env
+		}
+	}
+
+	task := asynq.NewTask(topic, taskPayload)
 	opts = append([]asynq.Option{asynq.Queue(s.queueName)}, opts...)
 	return s.client.EnqueueContext(ctx, task, opts...)
 }
