@@ -3,16 +3,24 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
+	"go.elastic.co/apm"
 )
 
 const defaultQueueName = "default"
 
 var PubSub *PubSubService
+
+var (
+	ctxType = reflect.TypeOf((*context.Context)(nil)).Elem()
+	errType = reflect.TypeOf((*error)(nil)).Elem()
+)
 
 // HandlerFunc is the callback for a topic. Payload is the raw JSON bytes from Publish.
 type HandlerFunc func(ctx context.Context, payload []byte) error
@@ -64,16 +72,25 @@ func NewPubSubService(rdb redis.UniversalClient, queueName string, prefix ...str
 }
 
 // Subscribe registers a handler for a topic. Call before Start().
-func (s *PubSubService) Subscribe(topic string, fn HandlerFunc) {
+//
+// handler may be either:
+//   - func(ctx context.Context, payload []byte) error  — raw JSON bytes, unmarshal yourself
+//   - func(ctx context.Context, data *T) error          — the JSON payload is auto-unmarshaled into *T
+//
+// This mirrors the Kafka service: pass a typed handler and the payload is
+// decoded for you. The topic is exposed to the handler via APM tracing rather
+// than as a parameter (see processTask).
+func (s *PubSubService) Subscribe(topic string, handler interface{}) {
 	if topic == "" {
 		panic("pubsub: topic is required")
 	}
-	if fn == nil {
+	if handler == nil {
 		panic("pubsub: handler is required")
 	}
 	if s.prefix != "" {
 		topic = s.prefix + topic
 	}
+	fn := s.wrapHandler(handler)
 	s.mu.Lock()
 	s.handlers[topic] = fn
 	s.mu.Unlock()
@@ -85,16 +102,91 @@ func (s *PubSubService) Subscribe(topic string, fn HandlerFunc) {
 		Infof("Registered handler for topic %s", topic)
 }
 
+// wrapHandler normalizes a user handler into a HandlerFunc. Raw byte handlers
+// are returned as-is; a typed func(ctx, *T) error is wrapped so the JSON payload
+// is unmarshaled into a fresh *T before the call.
+func (s *PubSubService) wrapHandler(handler interface{}) HandlerFunc {
+	switch h := handler.(type) {
+	case HandlerFunc:
+		return h
+	case func(context.Context, []byte) error:
+		return h
+	}
+
+	v := reflect.ValueOf(handler)
+	t := v.Type()
+	if t.Kind() != reflect.Func || t.NumIn() != 2 || t.NumOut() != 1 {
+		panic(fmt.Sprintf("pubsub subscribe: handler must be func(context.Context, *T) error, got %T", handler))
+	}
+	if t.In(0) != ctxType {
+		panic(fmt.Sprintf("pubsub subscribe: first arg must be context.Context, got %v", t.In(0)))
+	}
+	if !t.Out(0).Implements(errType) {
+		panic(fmt.Sprintf("pubsub subscribe: handler must return error, got %v", t.Out(0)))
+	}
+	arg1 := t.In(1)
+	if arg1.Kind() != reflect.Ptr {
+		panic(fmt.Sprintf("pubsub subscribe: second arg must be a pointer (*T), got %v", arg1))
+	}
+
+	return func(ctx context.Context, payload []byte) error {
+		ptr := reflect.New(arg1.Elem()) // new(T) -> *T
+		if len(payload) > 0 {
+			if err := json.Unmarshal(payload, ptr.Interface()); err != nil {
+				return err
+			}
+		}
+		res := v.Call([]reflect.Value{reflect.ValueOf(ctx), ptr})
+		if res[0].IsNil() {
+			return nil
+		}
+		return res[0].Interface().(error)
+	}
+}
+
 func (s *PubSubService) processTask(ctx context.Context, task *asynq.Task) error {
 	topic := task.Type()
-	payload := task.Payload()
 	s.mu.RLock()
 	fn, ok := s.handlers[topic]
 	s.mu.RUnlock()
 	if !ok {
+		Logger(ctx).
+			WithField("topic", topic).
+			WithField("component", "pubsub").
+			Warn("No handler for topic, discarding message")
 		return nil
 	}
-	return fn(ctx, payload)
+
+	tracer := apm.DefaultTracer
+	if !tracer.Recording() {
+		return fn(ctx, task.Payload())
+	}
+
+	tx := tracer.StartTransaction(fmt.Sprintf("PubSub Consume %s", topic), "messaging")
+	defer tx.End()
+	tx.Context.SetLabel("topic", topic)
+	tx.Context.SetLabel("queue", s.queueName)
+	ctx = apm.ContextWithTransaction(ctx, tx)
+
+	defer func() {
+		if r := recover(); r != nil {
+			e := tracer.Recovered(r)
+			e.SetTransaction(tx)
+			e.Send()
+			panic(r)
+		}
+	}()
+
+	err := fn(ctx, task.Payload())
+	if err != nil {
+		tx.Result = "failure"
+		e := tracer.NewError(err)
+		e.SetTransaction(tx)
+		e.Send()
+		return err
+	}
+	tx.Result = "success"
+	return nil
 }
 
 // Start starts the worker in a background goroutine. Call after Subscribe. Safe to call once.
