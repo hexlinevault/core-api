@@ -185,47 +185,47 @@ These can be configured by extending the initialization logic in `main.go`.
 
 ## Delayed PubSub
 
-ระบบ internal pub/sub ที่รองรับ **delay** และป้องกัน **duplicate processing** ตอน horizontal scale ใช้ [github.com/hibiken/asynq](https://github.com/hibiken/asynq) (Redis-based task queue) เป็น backend
+An internal pub/sub system that supports **delays** and prevents **duplicate processing** during horizontal scaling. It uses [github.com/hibiken/asynq](https://github.com/hibiken/asynq) (a Redis-based task queue) as its backend.
 
-ทุกอย่างอยู่ใน `bootstrap/pubsub.go`
+Everything lives in `bootstrap/pubsub.go`.
 
 ### How it works
 
 ```
 Publish(ctx, topic, payload, opts...)
-       │  opts เช่น asynq.ProcessIn(delay), asynq.Queue(name)
+       │  opts e.g. asynq.ProcessIn(delay), asynq.Queue(name)
        ▼
-asynq Client.EnqueueContext → Redis (queue: default หรือที่กำหนด)
+asynq Client.EnqueueContext → Redis (queue: default or the one specified)
        │
        ▼
-asynq Server (worker) ใน goroutine — Start() แล้ว return ทันที
-  → processTask กระจายตาม task.Type() (topic) ไปยัง handler ที่ Subscribe ไว้
+asynq Server (worker) in a goroutine — Start() returns immediately
+  → processTask dispatches by task.Type() (topic) to the Subscribed handler
        │
        ▼
-HandlerFunc(ctx, payload []byte)  — payload คือ JSON bytes, unmarshal เองใน handler
+HandlerFunc(ctx, payload []byte)  — payload is JSON bytes; unmarshal it yourself in the handler
 ```
 
-- **Immediate:** ไม่ส่ง option → ใส่ default queue ทำงานทันทีที่ worker ว่าง
-- **Delayed:** ส่ง `asynq.ProcessIn(delay)` ใน opts ของ Publish
+- **Immediate:** no option → enqueued on the default queue, runs as soon as a worker is free
+- **Delayed:** pass `asynq.ProcessIn(delay)` in the Publish opts
 
 ### Usage
 
-ใช้ Redis connection ที่ register ไว้แล้ว (ต้องเรียก `CreateRedisConnection` ก่อน):
+Use a Redis connection that has already been registered (you must call `CreateRedisConnection` first):
 
 ```go
 // main.go
-bootstrap.CreatePubSubService("")        // ใช้ redis connection ชื่อ "default"
-bootstrap.CreatePubSubService("cache")   // ใช้ connection ชื่อ "cache"
+bootstrap.CreatePubSubService("")        // use the redis connection named "default"
+bootstrap.CreatePubSubService("cache")   // use the connection named "cache"
 
-// ลง handlers ก่อน Start (handler รับ ctx กับ payload []byte)
+// Register handlers before Start (handler receives ctx and payload []byte)
 bootstrap.PubSub.Subscribe("send-email", sendEmailHandler)
 bootstrap.PubSub.Subscribe("charge-card", chargeCardHandler)
 
-// เริ่ม worker ใน background — return ทันที
+// Start the worker in the background — returns immediately
 bootstrap.PubSub.Start()
-defer bootstrap.PubSub.Close()   // graceful shutdown, เรียกซ้ำได้
+defer bootstrap.PubSub.Close()   // graceful shutdown, safe to call multiple times
 
-// Publish — payload เป็นอะไรก็ได้ (จะ marshal เป็น JSON); opts เป็น asynq.Option
+// Publish — payload can be anything (it is marshaled to JSON); opts are asynq.Option
 bootstrap.PubSub.Publish(ctx, "send-email", payload)
 bootstrap.PubSub.Publish(ctx, "send-email", payload, asynq.ProcessIn(5*time.Second))
 bootstrap.PubSub.Publish(ctx, "send-email", payload, asynq.ProcessIn(5*time.Second), asynq.TaskID("unique-id"))
@@ -233,14 +233,14 @@ bootstrap.PubSub.Publish(ctx, "send-email", payload, asynq.ProcessIn(5*time.Seco
 
 ### CreatePubSubService / NewPubSubService
 
-| ฟังก์ชัน | ใช้เมื่อ |
+| Function | When to use |
 |----------|----------|
-| `CreatePubSubService(redisConnectionName string)` | ใช้ใน app — เอาสาย Redis จากที่ register ไว้ แล้วเซ็ต global `bootstrap.PubSub` |
-| `NewPubSubService(rdb, queueName string)` | สร้าง service เอง (เช่น ใน test อยากได้ queue แยก) — ถ้า `queueName == ""` ใช้ `"default"` |
+| `CreatePubSubService(redisConnectionName string)` | In the app — take a registered Redis connection and set the global `bootstrap.PubSub` |
+| `NewPubSubService(rdb, queueName string)` | Build a service yourself (e.g. in tests where you want an isolated queue) — if `queueName == ""`, `"default"` is used |
 
 ### Handler signature
 
-Handler คือ `bootstrap.HandlerFunc` = `func(ctx context.Context, payload []byte) error`. Payload คือ JSON ที่ Publish marshal มา — ต้อง unmarshal เองใน handler:
+A handler is a `bootstrap.HandlerFunc` = `func(ctx context.Context, payload []byte) error`. The payload is the JSON that Publish marshaled — you must unmarshal it yourself in the handler:
 
 ```go
 func sendEmailHandler(ctx context.Context, payload []byte) error {
@@ -300,21 +300,111 @@ defer bootstrap.PubSub.Close()
 
 ### Backend (asynq)
 
-- Queue name มาจาก `CreatePubSubService` (ใช้ `"default"`) หรือ `NewPubSubService(rdb, queueName)`
+- The queue name comes from `CreatePubSubService` (uses `"default"`) or `NewPubSubService(rdb, queueName)`
 - Topic = asynq task type; payload = task payload (JSON bytes)
-- Publish ใส่ `asynq.Queue(s.queueName)` ให้อัตโนมัติ
+- Publish adds `asynq.Queue(s.queueName)` automatically
 
 ### Cluster safety
 
-asynq ออกแบบมาให้หลาย worker ใช้ Redis queue ร่วมกันได้ — แต่ละ task ถูก claim และ process โดย worker เดียว ทำให้แต่ละ job ถูก process **ครั้งเดียว** แม้ scale หลาย server (at-least-once delivery)
+asynq is designed so that multiple workers can share a Redis queue — each task is claimed and processed by a single worker, so every job is processed **once** even when scaled across many servers (at-least-once delivery).
+
+## System Notification
+
+`utils.TriggerSystemNoti` reports high-level system events (errors, warnings, notifications) to developers. The message is published to a pub/sub topic; a subscriber consumes it and forwards it to Telegram.
+
+The **pub/sub engine is selectable** — either **Kafka** (default) or **Redis** (the Delayed PubSub service above). Both the publisher (`TriggerSystemNoti`) and the subscriber respect the same engine setting, so they stay matched.
+
+Everything lives in `utils/notification.go` and `bootstrap/system-noti.go`.
+
+### How it works
+
+```
+TriggerSystemNoti(ctx, type, message, err)
+       │  builds a SystemNoti{Environment, Type, Message, Error, Time, CodeLine}
+       ▼
+publish to topic bootstrap.SYSTEM_NOTI_KAFKA_PUBLISHER
+   ├─ engine "kafka" → bootstrap.Kafka.Publish
+   └─ engine "redis" → bootstrap.PubSub.Publish
+       │
+       ▼
+subscriber (matching engine)
+   ├─ Kafka → utils.SystemNotiSubscriber()
+   └─ Redis → utils.SystemNotiRedisSubscriber()
+       │
+       ▼
+format an HTML message → send to Telegram (SYSTEM_NOTI_TELEGRAM_*)
+```
+
+### Setup
+
+Call `InitSystemNoti` once at startup. The engine defaults to `"kafka"` for backward compatibility.
+
+```go
+// main.go
+bootstrap.CreateTelegramBot(os.Getenv("SYSTEM_NOTI_TELEGRAM_BOT_TOKEN"))
+
+bootstrap.InitSystemNoti(&configs.SystemNotiConf{
+    TelegramChatId: utils.Pointer(os.Getenv("SYSTEM_NOTI_TELEGRAM_BOT_CHAT_ID")),
+    // Engine: utils.Pointer("redis"), // "kafka" (default) or "redis"
+    // MessageTopic: utils.Pointer("system-notification-publisher"), // override the topic/queue name
+})
+```
+
+`SystemNotiConf` fields:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `Engine` | `"kafka"` | Pub/sub engine: `"kafka"` or `"redis"` |
+| `MessageTopic` | `"system-notification-publisher"` | Topic (Kafka) / task type (Redis) used by both publisher and subscriber |
+| `TelegramConnection` | `"default"` | Telegram bot connection name (see `CreateTelegramBot`) |
+| `TelegramChatId` | — | Target chat id. **Required** when registering a subscriber |
+
+### Publishing
+
+`TriggerSystemNoti` is engine-agnostic — call it the same way regardless of the configured engine:
+
+```go
+import "github.com/hexlinevault/core-api/utils"
+
+utils.TriggerSystemNoti(ctx, utils.NotiTypeError, "failed to settle bet", err)
+utils.TriggerSystemNoti(ctx, utils.NotiTypeWarning, "balance check slow", nil)
+utils.TriggerSystemNoti(ctx, utils.NotiTypeNotification, "service started", nil)
+```
+
+Notification types: `NotiTypeNotification`, `NotiTypeError`, `NotiTypeWarning`. The `CodeLine` (caller file/line) is included for error/warning types.
+
+### Registering the subscriber
+
+Register the subscriber that matches the configured engine. Both require `InitSystemNoti` to have set the Telegram chat id, or they panic at registration time.
+
+```go
+// Kafka engine
+bootstrap.Kafka.Subscribe(
+    bootstrap.SYSTEM_NOTI_KAFKA_PUBLISHER,
+    apmmiddlewares.APMKafkaWrapper(utils.SystemNotiSubscriber()),
+)
+
+// Redis engine
+bootstrap.PubSub.Subscribe(
+    bootstrap.SYSTEM_NOTI_KAFKA_PUBLISHER,
+    utils.SystemNotiRedisSubscriber(),
+)
+```
+
+| Subscriber | Engine | Signature |
+|------------|--------|-----------|
+| `SystemNotiSubscriber()` | Kafka | `func(*sarama.ConsumerMessage, *SystemNoti) error` |
+| `SystemNotiRedisSubscriber()` | Redis | `bootstrap.HandlerFunc` (`func(ctx, payload []byte) error`) |
+
+> The Redis engine reuses the Delayed PubSub service, so `bootstrap.CreatePubSubService(...)` must be called before publishing or subscribing with `"redis"`. Likewise the Kafka engine requires `bootstrap.CreateKafkaService(...)`.
 
 ## Utils
 
 ### Map Helpers (`utils/map.go`)
 
-ใช้สำหรับแปลง Slice ของ Struct Pointer ให้เป็น Map โดยสามารถระบุฟิลด์ที่ต้องการใช้เป็น Key ได้
+Convert a slice of struct pointers into a map, specifying which field(s) to use as the key.
 
-#### วิธีการใช้งาน (ConvertMap)
+#### Usage (ConvertMap)
 
 ```go
 import "gitlab.com/stand-eleven/api-service.git/utils"
@@ -331,23 +421,23 @@ func Example() {
         {ID: 2, Code: "U002", Name: "Bob"},
     }
 
-    // 1. แปลงโดยใช้ ID เป็น Key (uint64)
+    // 1. Convert using ID as the key (uint64)
     userMapByID := apputils.ConvertMap[uint64, User](users, "ID")
     // Result: map[1:*User{ID:1...}, 2:*User{ID:2...}]
 
-    // 2. แปลงโดยใช้ Code เป็น Key (string)
+    // 2. Convert using Code as the key (string)
     userMapByCode := apputils.ConvertMap[string, User](users, "Code")
     // Result: map["U001":*User{ID:1...}, "U002":*User{ID:2...}]
 
-    // 3. แปลงโดยใช้หลายฟิลด์ร่วมกัน (ผลลัพธ์จะเป็น string ต่อกันด้วย "_")
+    // 3. Convert using multiple fields combined (the result is a string joined with "_")
     userMapCombined := apputils.ConvertMap[string, User](users, "ID", "Code")
     // Result: map["1_U001":*User{ID:1...}, "2_U002":*User{ID:2...}]
 }
 ```
 
-#### การใช้ Pick และ Omit (คล้าย TypeScript)
+#### Using Pick and Omit (similar to TypeScript)
 
-ใช้สำหรับเลือก (Pick) หรือตัดออก (Omit) เฉพาะบางฟิลด์จาก Struct หรือ Map โดยจะคืนค่าเป็น `map[string]any` (รองรับ JSON tag)
+Select (Pick) or drop (Omit) specific fields from a struct or map. Returns a `map[string]any` (respects JSON tags).
 
 ```go
 type User struct {
@@ -358,15 +448,15 @@ type User struct {
 
 user := User{ID: 1, Name: "User", Email: "user@example.com"}
 
-// 1. Omit: ตัดฟิลด์ที่ไม่ต้องการออก
+// 1. Omit: drop the unwanted fields
 res := utils.Omit(user, "email", "id")
 // Result: map[string]any{"name": "User"}
 
-// 2. Pick: เลือกเฉพาะฟิลด์ที่ต้องการ
+// 2. Pick: keep only the wanted fields
 res := utils.Pick(user, "name")
 // Result: map[string]any{"name": "User"}
 
-// 3. ใช้งานกับ Slices (OmitSlice / PickSlice)
+// 3. Use with slices (OmitSlice / PickSlice)
 users := []User{{ID: 1, Name: "A"}, {ID: 2, Name: "B"}}
 res := utils.OmitSlice(users, "id")
 // Result: []map[string]any{ {"name": "A"}, {"name": "B"} }
@@ -374,11 +464,11 @@ res := utils.OmitSlice(users, "id")
 
 ### Pointer & Deep Property Helpers (`utils/pointer.go`, `utils/object.go`)
 
-ใช้สำหรับจัดการ Pointer และดึงข้อมูลจากโครงสร้างที่ซ้อนกัน (Nested Structure) อย่างปลอดภัย (คล้าย Lodash ใน Node.js)
+Safely work with pointers and read values from nested structures (similar to Lodash in Node.js).
 
-#### 1. การดึงค่าจากข้อมูลที่ซ้อนกัน (`NestedValue`)
+#### 1. Reading values from nested data (`NestedValue`)
 
-ใช้ดึงค่าจาก Struct, Map หรือ Slice ที่ซ้อนกันหลายชั้น โดยระบุเป็น string path (dot notation) ระบบจะจัดการเช็ค `nil` ให้โดยอัตโนมัติเพื่อป้องกันการ Panic
+Read a value from a deeply nested struct, map, or slice using a string path (dot notation). It automatically performs `nil` checks to prevent panics.
 
 ```go
 type Additional struct { Privilege float64 }
@@ -392,26 +482,26 @@ func Example() {
         },
     }
 
-    // ดึงค่า Privilege โดยระบุ path
-    // หากส่วนใดส่วนหนึ่งเป็น nil หรือหาฟิลด์ไม่เจอ จะคืนค่า fallback (0.0) ทันที
+    // Read Privilege by specifying the path
+    // If any segment is nil or a field is not found, the fallback (0.0) is returned immediately
     val := apputils.NestedValue(resp, "Data.Addr.Privilege", 0.0) // Result: 10.5
 
-    // รองรับการเข้าถึง Slice/Array ด้วย index
+    // Slice/array access by index is supported
     // val := apputils.NestedValue(data, "Items.0.Name", "Unknown")
 }
 ```
 
-#### 2. การจัดการ Pointer แบบพื้นฐาน (`Pointer`, `Value`, `ValueOr`)
+#### 2. Basic pointer handling (`Pointer`, `Value`, `ValueOr`)
 
 ```go
 func ExamplePointer() {
-    // 1. สร้าง Pointer จากค่าคงที่ (ปกติ Go ทำไม่ได้)
+    // 1. Create a pointer from a literal (which Go cannot normally do)
     s := apputils.Pointer("hello") // *string
 
-    // 2. ดึงค่าจาก Pointer อย่างปลอดภัย (ถ้า nil จะสรุปค่า Zero Value ตาม Type)
+    // 2. Read a value from a pointer safely (if nil, returns the type's zero value)
     val := apputils.Value(s) // "hello"
 
-    // 3. ดึงค่าจาก Pointer หรือถ้าเป็น nil ให้ใช้ค่า Default
+    // 3. Read a value from a pointer, or use the default if it is nil
     valWithDefault := apputils.ValueOr(s, "default_val") // "hello"
 }
 ```
