@@ -12,7 +12,6 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
 	"go.elastic.co/apm"
-	"go.elastic.co/apm/module/apmhttp"
 )
 
 const defaultQueueName = "default"
@@ -25,13 +24,15 @@ var (
 )
 
 // PubSubMessage is the message delivered to a subscriber, analogous to
-// sarama.ConsumerMessage on the Kafka side. Context carries the per-message
-// context (with the APM transaction); Payload is the raw JSON bytes.
+// sarama.ConsumerMessage on the Kafka side. Payload is the raw JSON bytes.
+// Traceparent (W3C) is exposed so a tracing middleware (e.g. APMPubSubWrapper)
+// can continue the producer's distributed trace; core itself does not parse it.
 type PubSubMessage struct {
-	Context context.Context
-	Topic   string
-	Payload []byte
-	ID      string // asynq task ID
+	Context     context.Context
+	Topic       string
+	Payload     []byte
+	ID          string // asynq task ID
+	Traceparent string // W3C traceparent propagated from the publisher, if any
 }
 
 // HandlerFunc is the raw callback for a topic. Payload is the raw JSON bytes
@@ -69,18 +70,6 @@ func injectTraceparent(ctx context.Context) string {
 		hex.EncodeToString(tc.Trace[:]),
 		hex.EncodeToString(tc.Span[:]),
 		tc.Options)
-}
-
-// parseTraceparent parses a W3C traceparent string into an apm.TraceContext.
-func parseTraceparent(tp string) (apm.TraceContext, bool) {
-	if tp == "" {
-		return apm.TraceContext{}, false
-	}
-	tc, err := apmhttp.ParseTraceparentHeader(tp)
-	if err != nil {
-		return apm.TraceContext{}, false
-	}
-	return tc, true
 }
 
 // unwrapEnvelope splits a stored task payload into the original data bytes and the
@@ -230,42 +219,15 @@ func (s *PubSubService) processTask(ctx context.Context, task *asynq.Task) error
 	taskID, _ := asynq.GetTaskID(ctx)
 	payload, traceparent := unwrapEnvelope(task.Payload())
 
-	tracer := apm.DefaultTracer
-	if !tracer.Recording() {
-		return fn(&PubSubMessage{Context: ctx, Topic: topic, Payload: payload, ID: taskID})
-	}
-
-	// Continue the producer's trace when a traceparent was propagated, mirroring
-	// APMKafkaWrapper on the Kafka side.
-	var txOpts apm.TransactionOptions
-	if tc, ok := parseTraceparent(traceparent); ok {
-		txOpts.TraceContext = tc
-	}
-	tx := tracer.StartTransactionOptions(fmt.Sprintf("PubSub Consume %s", topic), "messaging", txOpts)
-	defer tx.End()
-	tx.Context.SetLabel("topic", topic)
-	tx.Context.SetLabel("queue", s.queueName)
-	ctx = apm.ContextWithTransaction(ctx, tx)
-
-	defer func() {
-		if r := recover(); r != nil {
-			e := tracer.Recovered(r)
-			e.SetTransaction(tx)
-			e.Send()
-			panic(r)
-		}
-	}()
-
-	err := fn(&PubSubMessage{Context: ctx, Topic: topic, Payload: payload, ID: taskID})
-	if err != nil {
-		tx.Result = "failure"
-		e := tracer.NewError(err)
-		e.SetTransaction(tx)
-		e.Send()
-		return err
-	}
-	tx.Result = "success"
-	return nil
+	// Tracing is a middleware concern (see middlewares/apm.APMPubSubWrapper); core
+	// stays tracer-agnostic and just hands the traceparent through on the message.
+	return fn(&PubSubMessage{
+		Context:     ctx,
+		Topic:       topic,
+		Payload:     payload,
+		ID:          taskID,
+		Traceparent: traceparent,
+	})
 }
 
 // Start starts the worker in a background goroutine. Call after Subscribe. Safe to call once.

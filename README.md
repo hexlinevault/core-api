@@ -322,8 +322,14 @@ defer bootstrap.PubSub.Close()
 ### Observability
 
 - **Logging:** `Subscribe` logs each registered topic, and `Start` logs the full topic list it is about to consume (`component=pubsub`). `processTask` logs a warning when a message arrives for a topic with no registered handler.
-- **APM tracing:** every message is processed inside an Elastic APM transaction named `PubSub Consume <topic>` (with `topic`/`queue` labels). Use `msg.Context` inside handlers so downstream DB/HTTP spans nest under it.
-- **Distributed tracing:** when a trace is active at publish time, `Publish` propagates a W3C `traceparent` alongside the payload (asynq has no message headers, so it travels in a small `{_tp, _data}` envelope). The consumer continues that trace, so a request → publish → async handler shows up as one connected trace — the same behavior as the Kafka service. The `traceparent` wire format is cross-vendor (Elastic APM, OpenTelemetry, Datadog…), so only the inject/parse helpers change if the tracer is swapped.
+- **APM tracing (opt-in, at the call site):** core itself is tracer-agnostic — it does **not** start transactions. Wrap a handler with `apmmiddlewares.APMPubSubWrapper` when registering (the PubSub counterpart of `APMKafkaWrapper`):
+
+  ```go
+  bootstrap.PubSub.Subscribe(topic, apmmiddlewares.APMPubSubWrapper(handler))
+  ```
+
+  The wrapper starts a `PubSub Consume <topic>` transaction and exposes it via `msg.Context`, so downstream DB/HTTP spans nest under it.
+- **Distributed tracing:** when a trace is active at publish time, `Publish` propagates a W3C `traceparent` alongside the payload (asynq has no message headers, so it travels in a small `{_tp, _data}` envelope). Core hands that `traceparent` to the handler on `msg.Traceparent`; `APMPubSubWrapper` continues the trace from it, so a request → publish → async handler shows up as one connected trace — the same behavior as the Kafka service. The `traceparent` wire format is cross-vendor (Elastic APM, OpenTelemetry, Datadog…), so swapping tracers only touches the inject helper (in `Publish`) and the wrapper — not the core dispatch path.
 
 ### Cluster safety
 
