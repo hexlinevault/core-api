@@ -75,8 +75,14 @@ func (s *PubSubService) Subscribe(topic string, fn HandlerFunc) {
 		topic = s.prefix + topic
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.handlers[topic] = fn
+	s.mu.Unlock()
+
+	Logger(context.Background()).
+		WithField("topic", topic).
+		WithField("queue", s.queueName).
+		WithField("component", "pubsub").
+		Infof("Registered handler for topic %s", topic)
 }
 
 func (s *PubSubService) processTask(ctx context.Context, task *asynq.Task) error {
@@ -100,6 +106,19 @@ func (s *PubSubService) Start() {
 			DelayedTaskCheckInterval: 500 * time.Millisecond,
 		})
 	}
+
+	s.mu.RLock()
+	topics := make([]string, 0, len(s.handlers))
+	for topic := range s.handlers {
+		topics = append(topics, topic)
+	}
+	s.mu.RUnlock()
+	Logger(context.Background()).
+		WithField("queue", s.queueName).
+		WithField("topics", topics).
+		WithField("component", "pubsub").
+		Infof("Starting consumer with %d topic(s)", len(topics))
+
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
