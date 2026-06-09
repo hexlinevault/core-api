@@ -2,7 +2,6 @@ package utils
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
@@ -144,14 +143,12 @@ func SystemNotiSubscriber() func(msg *sarama.ConsumerMessage, noti *SystemNoti) 
 
 // SystemNotiRedisSubscriber subscribe system notification over the Redis (PubSub) engine.
 // Need to InitSystemNoti first. Register with bootstrap.PubSub.Subscribe.
-func SystemNotiRedisSubscriber() bootstrap.HandlerFunc {
+// SystemNotiRedisSubscriber is a typed PubSub handler — core unmarshals the
+// payload into *SystemNoti. Register it (optionally APM-wrapped) on the redis
+// engine, e.g. bootstrap.PubSub.Subscribe(topic, apmmiddlewares.APMPubSubWrapper(utils.SystemNotiRedisSubscriber())).
+func SystemNotiRedisSubscriber() func(*bootstrap.PubSubMessage, *SystemNoti) error {
 	assertSystemNotiReady()
-	return func(ctx context.Context, payload []byte) error {
-		noti := new(SystemNoti)
-		if err := json.Unmarshal(payload, noti); err != nil {
-			bootstrap.Logger(ctx).Error("[system-noti] unmarshal payload error", err)
-			return nil
-		}
+	return func(_ *bootstrap.PubSubMessage, noti *SystemNoti) error {
 		return sendSystemNoti(noti)
 	}
 }
