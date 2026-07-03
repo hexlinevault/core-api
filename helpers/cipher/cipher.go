@@ -8,7 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"io"
-	mrand "math/rand"
+	"math/big"
 )
 
 // LetterBytes WordLetters
@@ -19,11 +19,24 @@ func RandomString(n int) string {
 	return RandomLetter(n, LetterBytes)
 }
 
-// RandomLetter random password
+// RandomLetter returns a cryptographically random string of length n drawn
+// uniformly from the alphabet f. Uses crypto/rand — never math/rand, whose
+// internal state can be reconstructed from a few observed outputs, which is fatal
+// when the result is used as a token/password/session id.
 func RandomLetter(n int, f string) string {
+	if n <= 0 || len(f) == 0 {
+		return ""
+	}
 	b := make([]byte, n)
+	max := big.NewInt(int64(len(f)))
 	for i := range b {
-		b[i] = f[mrand.Intn(len(f))]
+		idx, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			// crypto/rand should never fail on supported platforms; a weak or
+			// empty secret would be worse than failing loudly, so panic.
+			panic("cipher: crypto/rand unavailable: " + err.Error())
+		}
+		b[i] = f[idx.Int64()]
 	}
 	return string(b)
 }

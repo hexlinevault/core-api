@@ -84,20 +84,30 @@ func CreateOAuthCredential() {
 // VerifyJWT verify jwt token
 func (ctl OAuth[T]) VerifyJWT(t string) (*systementities.CustomClaims[T], string, error) {
 	tok, err := jwt.ParseWithClaims(t, &systementities.CustomClaims[T]{}, func(token *jwt.Token) (interface{}, error) {
-		// Check is token use correct signing method
-		switch token.Method.(type) {
-		case *jwt.SigningMethodRSA, *jwt.SigningMethodRSAPSS:
-			return RSAPublicKey, nil
-		case *jwt.SigningMethodECDSA:
-			return ECDSAPrivateKey, nil
-		case *jwt.SigningMethodEd25519:
-			return Ed25519PrivateKey, nil
-		case *jwt.SigningMethodHMAC:
-			return []byte(os.Getenv("HMAC_SECRET")), nil
+		// Pin verification to the algorithm tokens are actually issued with
+		// (JWT_ALGORITHM, default RSA) and return the matching PUBLIC key.
+		// Accepting other algorithm families — especially HMAC, whose key would be
+		// an empty []byte when HMAC_SECRET is unset — enables algorithm-confusion
+		// token forgery (auth bypass).
+		switch os.Getenv("JWT_ALGORITHM") {
+		case "ECDSA":
+			if _, ok := token.Method.(*jwt.SigningMethodECDSA); !ok {
+				return nil, errors.New("unexpected signing method")
+			}
+			return ECDSAPublicKey, nil
+		case "Ed25519":
+			if _, ok := token.Method.(*jwt.SigningMethodEd25519); !ok {
+				return nil, errors.New("unexpected signing method")
+			}
+			return *Ed25519PublicKey, nil
 		default:
-			return nil, errors.New("invalid token type")
+			switch token.Method.(type) {
+			case *jwt.SigningMethodRSA, *jwt.SigningMethodRSAPSS:
+				return RSAPublicKey, nil
+			default:
+				return nil, errors.New("unexpected signing method")
+			}
 		}
-		// return secret for this signing method
 	})
 	var claims *systementities.CustomClaims[T]
 	var validClaim bool = false

@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"net"
@@ -235,9 +236,12 @@ func (ctx *AppContext[T]) VerifyClaimPayload(ct context.Context, payload *system
 
 // VerifyBasicAuth verify basic auth
 func (ctx *AppContext[T]) VerifyBasicAuth() error {
-	var err error
 	var authHeader = ctx.Context.GetHeader("X-Authorization")
 
+	// Guard the slice: a header shorter than the scheme prefix would panic.
+	if len(authHeader) < len(BASIC_SCHEMA) {
+		return coreErrors.ErrInvalidUsernameOrPassword
+	}
 	str, err := base64.StdEncoding.DecodeString(authHeader[len(BASIC_SCHEMA):])
 	if err != nil {
 		return coreErrors.ErrDecryptBase64
@@ -248,11 +252,15 @@ func (ctx *AppContext[T]) VerifyBasicAuth() error {
 	}
 	username := creds[0]
 	password := creds[1]
-	if username == os.Getenv("BASIC_AUTH_USERNAME") && password == os.Getenv("BASIC_AUTH_PASSWORD") {
+	// Constant-time comparison to avoid leaking credential length/prefix via
+	// response timing. Both compares run before the && so the check isn't
+	// short-circuited on a username mismatch.
+	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(os.Getenv("BASIC_AUTH_USERNAME"))) == 1
+	passOK := subtle.ConstantTimeCompare([]byte(password), []byte(os.Getenv("BASIC_AUTH_PASSWORD"))) == 1
+	if userOK && passOK {
 		return nil
-	} else {
-		return coreErrors.ErrInvalidUsernameOrPassword
 	}
+	return coreErrors.ErrInvalidUsernameOrPassword
 }
 
 // GetClaims get jwt claims

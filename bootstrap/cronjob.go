@@ -58,8 +58,18 @@ func StartCronLeaderElection(leaderKey string, registerJobs func(c *cron.Cron), 
 			// This instance is now the leader
 			Logger(ctx).Info("Acquired leader lock, starting cron scheduler...")
 
-			// Create and start scheduler
-			cronScheduler := cron.New(cron.WithSeconds())
+			// Create and start scheduler.
+			//   - Recover: robfig/cron v3 does not recover panics by default; without
+			//     this a panicking job crashes the whole process.
+			//   - SkipIfStillRunning: a slow run must not overlap the next tick (jobs
+			//     assume single-instance, non-overlapping execution).
+			cronScheduler := cron.New(
+				cron.WithSeconds(),
+				cron.WithChain(
+					cron.SkipIfStillRunning(cron.DefaultLogger),
+					cron.Recover(cron.DefaultLogger),
+				),
+			)
 			registerJobs(cronScheduler)
 			cronScheduler.Start()
 
