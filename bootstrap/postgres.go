@@ -1,15 +1,14 @@
 package bootstrap
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"strconv"
 	"time"
 
 	"github.com/hexlinevault/core-api/configs"
 
 	"github.com/lib/pq"
-	postgres "go.elastic.co/apm/module/apmgormv2/driver/postgres"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -55,15 +54,29 @@ var dbPostgresConnections map[string]string = make(map[string]string)
 func CreatePostgreSQLConnection(conf *configs.PostgreSQLConn) *gorm.DB {
 	connectionName := resolveConnectionName([]string{conf.ConnectionName})
 
+	// Determine log level based on APP_DEBUG
+	// Use Info level instead of db.Debug() to ensure Trace method is called (which receives context)
+	// db.Debug() uses Printf which doesn't receive context, breaking correlation_id
+	logLevel := logger.Silent
+	if conf.Debug {
+		logLevel = logger.Info
+	}
+
+	// Create custom GORM logger using our centralized logger
+	gormLogger := &gormLoggerAdapter{component: "postgres", connectionName: connectionName, logLevel: logLevel}
+
 	db, err := gorm.Open(postgres.Open(conf.DSN), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger: gormLogger,
 	})
+
 	if err != nil {
+		Logger(context.Background()).WithError(err).WithField("connection_name", connectionName).WithField("component", "postgres").Fatal("Failed to connect database")
 		panic(fmt.Sprintf("[postgres:%s] failed to connect database: %s", connectionName, err))
 	}
-	fmt.Printf("[postgres:%s] connected\n", connectionName)
+	Logger(context.Background()).WithField("connection_name", connectionName).WithField("component", "postgres").Info("Database connected")
 
 	if c, err := db.DB(); err != nil {
+		Logger(context.Background()).WithError(err).WithField("connection_name", connectionName).WithField("component", "postgres").Fatal("Connection pool error")
 		panic(fmt.Sprintf("[postgres:%s] connection poll error: %s", connectionName, err))
 	} else {
 		if v := conf.MaxIdleConns; v > 0 {
@@ -77,11 +90,6 @@ func CreatePostgreSQLConnection(conf *configs.PostgreSQLConn) *gorm.DB {
 		}
 		if v := conf.ConnMaxLifetime; v != nil {
 			c.SetConnMaxLifetime(*v)
-		}
-	}
-	if debug, err := strconv.ParseBool(os.Getenv("APP_DEBUG")); err == nil {
-		if debug {
-			db = db.Debug()
 		}
 	}
 	dbPostgres[connectionName] = db

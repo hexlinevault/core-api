@@ -13,4 +13,5 @@ type PostgreSQLConn struct {
 	MaxOpenConns    int
 	ConnMaxIdleTime *time.Duration
 	ConnMaxLifetime *time.Duration
+	Debug           bool
 }

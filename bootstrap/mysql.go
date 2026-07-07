@@ -2,8 +2,7 @@ package bootstrap
 
 import (
 	"context"
-	"os"
-	"strconv"
+	"fmt"
 	"time"
 
 	"github.com/hexlinevault/core-api/configs"
@@ -113,7 +112,7 @@ func CreateMySQLConnection(conf *configs.MySQLConn) *gorm.DB {
 	// Use Info level instead of db.Debug() to ensure Trace method is called (which receives context)
 	// db.Debug() uses Printf which doesn't receive context, breaking correlation_id
 	logLevel := logger.Silent
-	if debug, err := strconv.ParseBool(os.Getenv("APP_DEBUG")); err == nil && debug {
+	if conf.Debug {
 		logLevel = logger.Info
 	}
 
@@ -126,11 +125,14 @@ func CreateMySQLConnection(conf *configs.MySQLConn) *gorm.DB {
 
 	if err != nil {
 		Logger(context.Background()).WithError(err).WithField("connection_name", connectionName).WithField("component", "mysql").Fatal("Failed to connect database")
+		panic(fmt.Sprintf("[mysql:%s] failed to connect database: %s", connectionName, err))
+
 	}
 	Logger(context.Background()).WithField("connection_name", connectionName).WithField("component", "mysql").Info("Database connected")
 
 	if c, err := db.DB(); err != nil {
 		Logger(context.Background()).WithError(err).WithField("connection_name", connectionName).WithField("component", "mysql").Fatal("Connection pool error")
+		panic(fmt.Sprintf("[mysql:%s] connection poll error: %s", connectionName, err))
 	} else {
 		if v := conf.MaxIdleConns; v > 0 {
 			c.SetMaxIdleConns(v)
