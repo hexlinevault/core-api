@@ -8,7 +8,7 @@ import (
 	"github.com/hexlinevault/core-api/configs"
 
 	"github.com/lib/pq"
-	"gorm.io/driver/postgres"
+	postgres "go.elastic.co/apm/module/apmgormv2/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
