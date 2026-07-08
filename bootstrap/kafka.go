@@ -58,8 +58,9 @@ type (
 	PublishOption func(*publishOptions)
 
 	publishOptions struct {
-		Topic string
-		Key   string
+		Topic   string
+		Key     string
+		Headers []sarama.RecordHeader
 	}
 )
 
@@ -72,6 +73,13 @@ func WithTopic(topic string) PublishOption {
 func WithKey(key string) PublishOption {
 	return func(o *publishOptions) {
 		o.Key = key
+	}
+}
+
+// WithKafkaHeader adds a record header to the message. Repeatable.
+func WithKafkaHeader(key, value string) PublishOption {
+	return func(o *publishOptions) {
+		o.Headers = append(o.Headers, sarama.RecordHeader{Key: []byte(key), Value: []byte(value)})
 	}
 }
 
@@ -204,8 +212,9 @@ func (s *KafkaService) Publish(ctx context.Context, topic string, data interface
 	}
 
 	msg := &sarama.ProducerMessage{
-		Topic: opts.Topic,
-		Value: value,
+		Topic:   opts.Topic,
+		Value:   value,
+		Headers: opts.Headers,
 	}
 
 	if opts.Key != "" {
