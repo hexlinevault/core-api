@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -122,6 +123,10 @@ func CreateKafkaService(conf *configs.KafkaConn) *KafkaService {
 		if err == nil {
 			kafkaConfig.Version = version
 		}
+	}
+	if conf.TLS {
+		kafkaConfig.Net.TLS.Enable = true
+		kafkaConfig.Net.TLS.Config = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	// Producer settings
 	kafkaConfig.Producer.Return.Successes = true

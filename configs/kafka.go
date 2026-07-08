@@ -15,4 +15,5 @@ type KafkaConn struct {
 	ConsumerConfig *sarama.Config
 	ProducerConfig *sarama.Config
 	Prefix         string
+	TLS            bool
 }
