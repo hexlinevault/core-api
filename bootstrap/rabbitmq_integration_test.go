@@ -232,6 +232,29 @@ func TestRabbitIntegrationClusterLockFailover(t *testing.T) {
 	}, "B took over after A stopped")
 }
 
+func TestRabbitIntegrationPassiveQueue(t *testing.T) {
+	s := newRabbitService(t, "it-passive")
+
+	// Simulate an external provider's pre-existing queue (declared out-of-band,
+	// name NOT following our prefix convention).
+	raw, err := s.Channel()
+	require.NoError(t, err)
+	_, err = raw.QueueDeclare("it_provider-feed", true, false, false, false, nil)
+	require.NoError(t, err)
+	raw.Close()
+
+	var handled atomic.Int32
+	s.Subscribe("provider-feed", func(d *amqp.Delivery, data interface{}) error {
+		handled.Add(1)
+		return nil
+	}, WithPassiveQueue())
+	require.NoError(t, s.Start())
+	time.Sleep(500 * time.Millisecond)
+
+	require.NoError(t, s.Publish(context.Background(), "provider-feed", "external payload"))
+	waitFor(t, 5*time.Second, func() bool { return handled.Load() == 1 }, "message from pre-existing queue")
+}
+
 // TestRabbitIntegrationReconnect restarts the broker mid-run and verifies both
 // the consumer and the publisher survive. Needs a restart command, e.g.:
 //

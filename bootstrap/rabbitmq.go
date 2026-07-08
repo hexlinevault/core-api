@@ -132,6 +132,7 @@ type (
 		AutoDelete           bool
 		Quorum               bool
 		SingleActiveConsumer bool
+		Passive              bool
 		QueueArgs            amqp.Table
 
 		LockKey        string
@@ -208,6 +209,15 @@ func WithSingleActiveConsumer() RabbitSubscribeOption {
 // WithQueueArgs merges extra queue declaration arguments (e.g. x-max-priority).
 func WithQueueArgs(args amqp.Table) RabbitSubscribeOption {
 	return func(o *rabbitSubscribeOptions) { o.QueueArgs = args }
+}
+
+// WithPassiveQueue skips all topology declaration and consumes from a
+// pre-existing queue. Use when connecting to an external broker where we lack
+// configure permission (e.g. provider feeds like LSports). The queue name is
+// used as-is apart from the config Prefix — external connections should set
+// Prefix to "".
+func WithPassiveQueue() RabbitSubscribeOption {
+	return func(o *rabbitSubscribeOptions) { o.Passive = true }
 }
 
 // WithClusterLock runs the consumer under a redsync distributed lock: across
@@ -796,6 +806,12 @@ func (s *RabbitMQService) consumeOnce(ctx context.Context, sub *rabbitSubscripti
 
 func (s *RabbitMQService) declareTopology(ch *amqp.Channel, sub *rabbitSubscription) (string, error) {
 	queueName := s.prefixed(sub.queue)
+
+	if sub.opts.Passive {
+		// External broker: the queue already exists and we may not have
+		// configure permission — consume it as-is.
+		return queueName, nil
+	}
 
 	args := amqp.Table{}
 	if sub.opts.Quorum {
