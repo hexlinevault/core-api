@@ -183,6 +183,85 @@ The `KafkaConn` struct in `configs/kafka.go` supports additional settings like:
 
 These can be configured by extending the initialization logic in `main.go`.
 
+## RabbitMQ Integration
+
+Uses `github.com/rabbitmq/amqp091-go`. The service is initialized in `bootstrap/rabbitmq.go` and accessible via the global variable `bootstrap.Rabbit`. It manages a single auto-reconnecting connection (exponential backoff, multi-host failover), a shared publisher channel with optional publisher confirms, and supervised consumers.
+
+### Initialization
+
+```go
+bootstrap.CreateRabbitMQService(&configs.RabbitMQConn{
+    URL:              os.Getenv("RABBITMQ_URL"), // amqp://user:pass@host:5672/vhost
+    // or: Hosts: []string{"node1:5672", "node2:5672"}, Username: ..., Password: ..., VHost: ...
+    ConnectionName:   "api-service",
+    Prefix:           os.Getenv("RABBITMQ_PREFIX"), // optional queue/exchange prefix
+    PublisherConfirm: true,                          // Publish blocks until broker ack
+})
+```
+
+### Publishing
+
+```go
+// Direct to queue (default exchange, routing key = queue name)
+err := bootstrap.Rabbit.Publish(ctx, "bet-settlements", data)
+
+// To a topic exchange with routing key + idempotency key
+err := bootstrap.Rabbit.Publish(ctx, "bet.settled", data,
+    bootstrap.WithExchange("game-events"),
+    bootstrap.WithMessageID(betID), // used by WithDedup on the consumer side
+    bootstrap.WithMessageTTL(30*time.Second),
+)
+```
+
+Payloads marshal like Kafka: `string`/`[]byte` pass through, everything else is JSON. APM trace context is injected as an `elastic-apm-traceparent` header.
+
+### Consuming
+
+```go
+// Typed handler — payload is JSON-unmarshaled into the struct
+bootstrap.Rabbit.Subscribe("bet-settlements", func(d *amqp.Delivery, data *BetEvent) error {
+    return process(data) // non-nil error triggers retry / dead-letter
+},
+    bootstrap.BindExchange("game-events", "topic", "bet.settled"),
+    bootstrap.WithConcurrency(8),
+    bootstrap.WithConsumerMaxRetry(3),
+    bootstrap.WithDeadLetter(), // declares <queue>.dlx + <queue>.dlq
+)
+
+if err := bootstrap.Rabbit.Start(); err != nil {
+    log.Fatal(err)
+}
+// ... on shutdown:
+bootstrap.Rabbit.Close() // waits for in-flight messages
+```
+
+Messages are acked on success, nacked (→ DLQ if `WithDeadLetter`) after all retries fail. Handler panics are recovered.
+
+### Multi-Cluster Coordination
+
+Three complementary mechanisms for running consumers on multiple instances/clusters:
+
+| Option                       | Scope                      | Behavior                                                                                                                                                     |
+| ---------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WithSingleActiveConsumer()` | one RabbitMQ cluster       | Broker-native: all instances connect, broker delivers to one; instant broker-side failover                                                                    |
+| `WithClusterLock(key)`       | any clusters sharing Redis | redsync leader election (same mechanism as `StartCronLeaderElection`): only the lock holder consumes; failover within `WithClusterLockTTL` (default 15s)      |
+| `WithDedup(ttl)`             | per message                | Redis SETNX on the message ID (or body hash): a message is processed at most once within `ttl`, even if redelivered or seen by two consumers during handover |
+
+```go
+// Only one instance across ALL clusters consumes; others stand by.
+bootstrap.Rabbit.Subscribe("game-credit-sync", SyncHandler,
+    bootstrap.WithClusterLock("rabbitmq:lock:game-credit-sync"),
+    bootstrap.WithClusterLockTTL(15*time.Second),
+    bootstrap.WithDedup(time.Hour), // idempotency guard across lock handover
+)
+```
+
+`WithClusterLock` requires `bootstrap.CreateRedisConnection` to have been called (uses the default Redis connection, override with `WithLockRedisConnection`).
+
+Other consumer options: `WithPrefetch`, `WithQuorumQueue` (replicated queues), `WithQueueArgs`, `WithAutoDelete`, `WithRequeueOnFailure`, `WithConsumerRetryDelay`. For raw AMQP access (custom topology, transactions) use `bootstrap.Rabbit.Channel()`.
+
+Integration tests live in `bootstrap/rabbitmq_integration_test.go` (build tag `integration`); see the file header for how to run them against Docker.
+
 ## Delayed PubSub
 
 An internal pub/sub system that supports **delays** and prevents **duplicate processing** during horizontal scaling. It uses [github.com/hibiken/asynq](https://github.com/hibiken/asynq) (a Redis-based task queue) as its backend.
