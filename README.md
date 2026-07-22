@@ -513,7 +513,7 @@ Convert a slice of struct pointers into a map, specifying which field(s) to use 
 #### Usage (ConvertMap)
 
 ```go
-import "gitlab.com/stand-eleven/api-service.git/utils"
+import "github.com/casinogamedotcom/b2c-api-service/utils"
 
 type User struct {
     ID   uint64
