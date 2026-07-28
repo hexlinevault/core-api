@@ -133,6 +133,29 @@ func CreateKafkaService(conf *configs.KafkaConn) *KafkaService {
 	kafkaConfig.Producer.Retry.Max = conf.ProducerRetry
 	kafkaConfig.Producer.RequiredAcks = sarama.WaitForAll
 
+	// Optional producer throughput tuning (zero values keep sarama defaults, so
+	// existing callers are unchanged). Batching + higher in-flight lets a
+	// high-rate producer beat the default MaxOpenRequests=5 / no-batching cap.
+	if conf.ProducerFlushFrequencyMs > 0 {
+		kafkaConfig.Producer.Flush.Frequency = time.Duration(conf.ProducerFlushFrequencyMs) * time.Millisecond
+	}
+	if conf.ProducerFlushMessages > 0 {
+		kafkaConfig.Producer.Flush.Messages = conf.ProducerFlushMessages
+	}
+	if conf.ProducerMaxOpenRequests > 0 {
+		kafkaConfig.Net.MaxOpenRequests = conf.ProducerMaxOpenRequests
+	}
+	switch conf.ProducerCompression {
+	case "gzip":
+		kafkaConfig.Producer.Compression = sarama.CompressionGZIP
+	case "snappy":
+		kafkaConfig.Producer.Compression = sarama.CompressionSnappy
+	case "lz4":
+		kafkaConfig.Producer.Compression = sarama.CompressionLZ4
+	case "zstd":
+		kafkaConfig.Producer.Compression = sarama.CompressionZSTD
+	}
+
 	// Consumer settings
 	if conf.Oldest {
 		kafkaConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
